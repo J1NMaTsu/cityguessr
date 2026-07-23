@@ -300,11 +300,6 @@ table.ach-table tr:nth-child(even) td{background:rgba(32,43,54,0.03);}
     <h2>設定・出題範囲</h2>
 
     <div class="field">
-      <label>プレイヤー名（オンラインランキング用）</label>
-      <input type="text" id="playerNameInput" maxlength="12" placeholder="名無し" style="width:100%; font-family:inherit; font-size:14px; padding:8px 10px; border:2px solid var(--ink); border-radius:2px; background:#fff; color:var(--ink);">
-    </div>
-
-    <div class="field">
       <label>出題範囲</label>
       <select id="rangeSelect">
         <option value="all">全国ランダム</option>
@@ -387,7 +382,6 @@ table.ach-table tr:nth-child(even) td{background:rgba(32,43,54,0.03);}
     <div class="ach-tabs">
       <button class="ach-tab active" id="tabTable">市町村クリア表</button>
       <button class="ach-tab" id="tabRanking">都道府県ランキング</button>
-      <button class="ach-tab" id="tabOnline">オンライン</button>
     </div>
 
     <div id="tableView" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
@@ -409,21 +403,6 @@ table.ach-table tr:nth-child(even) td{background:rgba(32,43,54,0.03);}
       <div class="ach-body" style="flex:1;">
         <ul class="rank-list" id="rankList"></ul>
       </div>
-    </div>
-
-    <div id="onlineView" class="hidden" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
-      <div class="ach-filter">
-        <select id="onlineTypeSelect">
-          <option value="timeattack">タイムアタック（10問勝負・タイム）</option>
-          <option value="timelimit">制限時間チャレンジ（クリア数）</option>
-          <option value="overall">通算実績（クリア市町村数）</option>
-        </select>
-      </div>
-      <div class="ach-progress" id="onlineStatus" style="font-size:12.5px; color:var(--ink-soft);"></div>
-      <div class="ach-body" style="flex:1;">
-        <ul class="rank-list" id="onlineList"></ul>
-      </div>
-      <button class="btn" id="onlineRefreshBtn" style="margin-top:10px;">更新</button>
     </div>
 
     <button class="btn ach-reset" id="resetAchBtn">実績をリセット</button>
@@ -598,126 +577,6 @@ let state = {
   elapsed: 0,
   startBounds: null       // map view bounds to zoom to at the start of each question (pref mode)
 };
-
-/* ---------------- Progress persistence (achievements survive site updates) ---------------- */
-const PROGRESS_KEY = 'dokopin_progress_v1';
-function saveProgress(){
-  try {
-    localStorage.setItem(PROGRESS_KEY, JSON.stringify({
-      clearedIds: Array.from(state.clearedIds),
-      prefStats: state.prefStats
-    }));
-  } catch(e){}
-}
-function loadProgress(){
-  try {
-    const raw = localStorage.getItem(PROGRESS_KEY);
-    if (!raw) return;
-    const data = JSON.parse(raw);
-    if (data && Array.isArray(data.clearedIds)) state.clearedIds = new Set(data.clearedIds);
-    if (data && data.prefStats && typeof data.prefStats === 'object') state.prefStats = data.prefStats;
-  } catch(e){}
-}
-loadProgress();
-
-/* ---------------- Online ranking (Google Apps Script backend) ----------------
-   1) GASプロジェクトを作成し、下部の Code.gs を貼り付けてスプレッドシートに紐付ける
-   2) 「デプロイ」→「ウェブアプリ」で、アクセスできるユーザー「全員」として公開する
-   3) 発行されたURL（.../exec で終わるもの）を下の GAS_WEBAPP_URL に設定する
-   未設定（空文字）の間はオンライン機能はすべて無効化され、通常プレイには影響しません。
------------------------------------------------------------------------------- */
-const GAS_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbyhju4zrMFy6TE0vKw0vpVS53LYIeFnbNg6A72k2P00YgznvtdNSqGiPdvvna59hbp0ew/exec'; // 例: 'https://script.google.com/macros/s/xxxxx/exec'
-
-function getClientId(){
-  try {
-    let id = localStorage.getItem('dokopin_client_id');
-    if (!id){
-      id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-      localStorage.setItem('dokopin_client_id', id);
-    }
-    return id;
-  } catch(e){ return 'c-unknown'; }
-}
-
-function getPlayerName(){
-  const v = (playerNameInput && playerNameInput.value || '').trim().slice(0, 12);
-  return v || '名無し';
-}
-try {
-  const savedName = localStorage.getItem('dokopin_player_name');
-  if (savedName && playerNameInput) playerNameInput.value = savedName;
-} catch(e){}
-if (playerNameInput){
-  playerNameInput.addEventListener('change', () => {
-    try { localStorage.setItem('dokopin_player_name', getPlayerName()); } catch(e){}
-  });
-}
-
-let lastOverallSubmitted = -1;
-
-async function postToGas(payload){
-  if (!GAS_WEBAPP_URL) return;
-  try {
-    await fetch(GAS_WEBAPP_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoid CORS preflight
-      body: JSON.stringify(payload)
-    });
-  } catch(e){ /* オフライン等は静かに無視 */ }
-}
-
-function submitTimeAttackScore(){
-  postToGas({ type:'timeattack', name:getPlayerName(), clientId:getClientId(), seconds:Math.round(state.elapsed*10)/10, score:state.totalScore });
-}
-function submitTimeLimitScore(){
-  postToGas({ type:'timelimit', name:getPlayerName(), clientId:getClientId(), timeLimit:state.timeLimit, clears:state.sessionClears });
-}
-function submitOverallScore(){
-  if (state.clearedIds.size <= lastOverallSubmitted) return;
-  lastOverallSubmitted = state.clearedIds.size;
-  postToGas({ type:'overall', name:getPlayerName(), clientId:getClientId(), clears:state.clearedIds.size });
-}
-
-async function fetchRanking(type){
-  if (!GAS_WEBAPP_URL){
-    onlineStatus.textContent = 'GAS_WEBAPP_URL が未設定です（Code.gs をデプロイしてURLを設定してください）';
-    onlineList.innerHTML = '';
-    return;
-  }
-  onlineStatus.textContent = '読み込み中…';
-  onlineList.innerHTML = '';
-  try {
-    const res = await fetch(`${GAS_WEBAPP_URL}?type=${encodeURIComponent(type)}&limit=20`);
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'unknown error');
-    if (!data.rows || data.rows.length === 0){
-      onlineStatus.textContent = 'まだ記録がありません。';
-      return;
-    }
-    onlineStatus.textContent = '';
-    onlineList.innerHTML = data.rows.map((r, i) => {
-      let detail = '';
-      if (type === 'timeattack') detail = `${r.seconds}秒（${r.score}pt）`;
-      else if (type === 'timelimit') detail = `${r.clears}件クリア（制限${r.timeLimit}秒）`;
-      else detail = `${r.clears}件クリア`;
-      return `<li><span class="pname">${i+1}. ${escapeHtml(r.name)}</span><span>${detail}</span></li>`;
-    }).join('');
-  } catch(e){
-    onlineStatus.textContent = '取得に失敗しました。時間をおいて再度お試しください。';
-  }
-}
-function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-tabOnline.addEventListener('click', () => {
-  tabOnline.classList.add('active'); tabTable.classList.remove('active'); tabRanking.classList.remove('active');
-  onlineView.classList.remove('hidden'); tableView.classList.add('hidden'); rankingView.classList.add('hidden');
-  fetchRanking(onlineTypeSelect.value);
-  SFX.click();
-});
-onlineTypeSelect.addEventListener('change', () => fetchRanking(onlineTypeSelect.value));
-onlineRefreshBtn.addEventListener('click', () => { fetchRanking(onlineTypeSelect.value); SFX.click(); });
 
 /* ---------------- Sound Effects (Web Audio, GeoGuessr風) ---------------- */
 const SFX = (() => {
@@ -943,15 +802,8 @@ const achBackdrop = document.getElementById('achBackdrop');
 const closeAchievement = document.getElementById('closeAchievement');
 const tabTable = document.getElementById('tabTable');
 const tabRanking = document.getElementById('tabRanking');
-const tabOnline = document.getElementById('tabOnline');
 const tableView = document.getElementById('tableView');
 const rankingView = document.getElementById('rankingView');
-const onlineView = document.getElementById('onlineView');
-const onlineTypeSelect = document.getElementById('onlineTypeSelect');
-const onlineList = document.getElementById('onlineList');
-const onlineStatus = document.getElementById('onlineStatus');
-const onlineRefreshBtn = document.getElementById('onlineRefreshBtn');
-const playerNameInput = document.getElementById('playerNameInput');
 const achProgress = document.getElementById('achProgress');
 const achTotal = document.getElementById('achTotal');
 const prefFilter = document.getElementById('prefFilter');
@@ -983,7 +835,6 @@ function initGameData(){
   });
   clearTotalEl.textContent = MUNI_DATA.length;
   achTotal.textContent = MUNI_DATA.length;
-  updateClearProgressUI();
 }
 
 /* ---------------- Drawer open/close ---------------- */
@@ -1172,8 +1023,6 @@ submitBtn.addEventListener('click', () => {
     if (!state.clearedIds.has(target.id)) state.sessionClears += 1;
     state.clearedIds.add(target.id);
     updateClearProgressUI();
-    saveProgress();
-    submitOverallScore();
   }
 
   // Per-prefecture stats, used for the 得意/苦手 ranking.
@@ -1182,7 +1031,6 @@ submitBtn.addEventListener('click', () => {
   ps.attempts += 1;
   ps.scoreSum += result.score;
   ps.distSum += d;
-  saveProgress();
 
   stampMark.textContent = result.rank;
   stampMark.className = 'stamp ' + result.cls;
@@ -1222,7 +1070,6 @@ function finishSession(){
     summaryAttemptRow.style.display = 'flex';
     summaryAttempt.textContent = state.qIndex;
     genImageBtn.classList.remove('hidden');
-    submitTimeLimitScore();
   } else {
     summaryTitle.textContent = 'お疲れさま！';
     summaryBigLabel.textContent = '合計スコア';
@@ -1233,7 +1080,6 @@ function finishSession(){
     summaryAvg.textContent = state.maxQuestions ? Math.round(state.totalScore / state.maxQuestions) : 0;
     summaryAttemptRow.style.display = 'none';
     genImageBtn.classList.add('hidden');
-    if (state.format === 'timeattack') submitTimeAttackScore();
   }
 }
 
@@ -1346,13 +1192,13 @@ achBackdrop.addEventListener('click', hideAchievement);
 prefFilter.addEventListener('change', renderAchTable);
 
 tabTable.addEventListener('click', () => {
-  tabTable.classList.add('active'); tabRanking.classList.remove('active'); tabOnline.classList.remove('active');
-  tableView.classList.remove('hidden'); rankingView.classList.add('hidden'); onlineView.classList.add('hidden');
+  tabTable.classList.add('active'); tabRanking.classList.remove('active');
+  tableView.classList.remove('hidden'); rankingView.classList.add('hidden');
   SFX.click();
 });
 tabRanking.addEventListener('click', () => {
-  tabRanking.classList.add('active'); tabTable.classList.remove('active'); tabOnline.classList.remove('active');
-  rankingView.classList.remove('hidden'); tableView.classList.add('hidden'); onlineView.classList.add('hidden');
+  tabRanking.classList.add('active'); tabTable.classList.remove('active');
+  rankingView.classList.remove('hidden'); tableView.classList.add('hidden');
   renderRanking();
   SFX.click();
 });
@@ -1361,7 +1207,6 @@ resetAchBtn.addEventListener('click', () => {
   if (!confirm('実績（クリア状況・都道府県ランキング）をすべてリセットします。よろしいですか？')) return;
   state.clearedIds.clear();
   state.prefStats = {};
-  saveProgress();
   updateClearProgressUI();
   renderAchTable();
   renderRanking();
